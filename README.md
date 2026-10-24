@@ -6,7 +6,7 @@ A Claude Code mod that lets the agent see how full its context window is and com
 - **`compact` tool** — queues a compaction for when the current turn ends (the same as typing `/compact`), with what the summary must keep. Afterwards a prompt starts the next turn, telling the agent to follow its CLAUDE.md post-compaction rules and then resume.
 - **Nudge from 90%** — every prompt carries a hidden note asking the agent to plan for compaction. It rides beside the prompt, not in the system prompt, so the prompt cache holds.
 
-Only the main session can compact; a subagent's call is refused. An interrupted turn drops a queued compaction. A message you type while the compaction runs goes first and carries the resume note with it; the resume prompt queued behind it is then ended before the model answers it.
+Only the main session can compact; a subagent's call is refused. An interrupted turn drops a queued compaction. A message you type while the compaction runs carries the resume note with it, and the resume prompt is not sent.
 
 ## Install
 

@@ -81,17 +81,11 @@ async function compactAndEndTurn($: never, on: On, answer: object, reason = 'ans
     return answer as never
   })
   on('turn.complete', async () => ({ text: 'done' }) as never)
-  on('turn.start', async (_, e) => ({ turnId: e.turnId }) as never)
-  const aborted: string[] = []
-  on('turn.abort', async (_, e) => {
-    aborted.push((e as { turnId: string }).turnId)
-    return { value: undefined } as never
-  })
   on('ui.toast', async () => ({ value: undefined }) as never)
   on('session.messages', async () => ({ value: [] }) as never)
   const s = $ as unknown as {
     tool: { call: (x: never) => Promise<unknown> }
-    turn: { complete: (x: never) => Promise<unknown>; start: (x: never) => Promise<unknown> }
+    turn: { complete: (x: never) => Promise<unknown> }
     prompt: { submit: (x: never) => Promise<unknown> }
   }
   await start($)
@@ -100,40 +94,35 @@ async function compactAndEndTurn($: never, on: On, answer: object, reason = 'ans
   await clock.settle()
   // Typed while compacting, but its prompt.submit raised once the compaction ended (as live).
   for (const text of typedAfter) await s.prompt.submit({ text, origin: { kind: 'composer' }, wait: false } as never)
-  // Each queued prompt starts its turn, the typed ones ahead of ours.
-  const order = [...seen.filter(x => !x.text.startsWith('[context-meter]')), ...seen.filter(x => x.text.startsWith('[context-meter]'))]
-  for (const [i, x] of order.entries()) await s.turn.start({ text: x.text, turnId: `q${i}` } as never)
-  return { seen, asked, aborted, s }
+  await clock.advance(1500)
+  return { seen, asked, s }
 }
 
 test('when the turn ends the compaction runs, then a prompt starts the next turn', async ($, on) => {
-  const { seen, asked, aborted, s } = await compactAndEndTurn($ as never, on, { messages: [{ role: 'user', text: 'summary', toolUses: [] }] })
+  const { seen, asked, s } = await compactAndEndTurn($ as never, on, { messages: [{ role: 'user', text: 'summary', toolUses: [] }] })
   expect(asked).toEqual(['keep the plan'])
   expect(seen.map(x => x.text)).toEqual([resumeText('Start phase 3')])
-  expect(aborted).toEqual([])
   expect(resumeText('Start phase 3')).toContain('CLAUDE.md files were reloaded and are mandatory')
   expect(resumeText('Start phase 3')).toContain('then: Start phase 3')
-  // Our turn started, so the next prompt typed carries nothing.
+  // Ours was sent, so the next prompt typed carries nothing.
   await s.prompt.submit({ text: 'next step', origin: { kind: 'composer' }, wait: false } as never)
   expect(seen.at(-1)?.context ?? []).toEqual([])
 })
 
-test('a prompt typed during the compaction carries the resume, and our stale prompt behind it is ended', async ($, on) => {
+test('a prompt typed during the compaction carries the resume, and ours is not sent', async ($, on) => {
   const summary = { messages: [{ role: 'user', text: 'summary', toolUses: [] }] }
-  const { seen, aborted } = await compactAndEndTurn($ as never, on, summary, 'answer', ['actually, stop', 'and wait'])
-  expect(seen.map(x => x.text)).toEqual(['actually, stop', 'and wait', resumeText('Start phase 3')])
+  const { seen } = await compactAndEndTurn($ as never, on, summary, 'answer', ['actually, stop', 'and wait'])
+  expect(seen.map(x => x.text)).toEqual(['actually, stop', 'and wait'])
   expect(seen[0].context).toEqual([carriedText('Start phase 3')])
   expect(seen[1].context ?? []).toEqual([])
-  expect(aborted).toEqual(['q2'])
   expect(carriedText('Start phase 3')).toContain('answer this message: it comes first')
 })
 
-test('a prompt whose hook fires after the compaction ends still carries the resume, and ours is ended', async ($, on) => {
+test('a prompt whose hook fires after the compaction ends still carries the resume, and ours is not sent', async ($, on) => {
   const summary = { messages: [{ role: 'user', text: 'summary', toolUses: [] }] }
-  const { seen, aborted } = await compactAndEndTurn($ as never, on, summary, 'answer', [], ['see if you get this'])
-  expect(seen.map(x => x.text)).toEqual([resumeText('Start phase 3'), 'see if you get this'])
-  expect(seen[1].context).toEqual([carriedText('Start phase 3')])
-  expect(aborted).toEqual(['q1'])
+  const { seen } = await compactAndEndTurn($ as never, on, summary, 'answer', [], ['see if you get this'])
+  expect(seen.map(x => x.text)).toEqual(['see if you get this'])
+  expect(seen[0].context).toEqual([carriedText('Start phase 3')])
 })
 
 test('a skipped compaction starts no turn', async ($, on) => {

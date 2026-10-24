@@ -12,9 +12,11 @@ const k = (n: number) => `${Math.round(n / 1000)}k`
 // A compaction the agent asked for, run when its turn ends: $.session.compact rejects mid-turn.
 // Module state, so a mod reload drops a queued one; the agent can ask again.
 let queued: { instructions?: string; resume?: string } | undefined
-// From the compaction's start until our resume turn starts: its resume, and whether a prompt
-// ahead of it carries it. A prompt typed meanwhile raises prompt.submit only once it ends.
+// From the compaction's start until SETTLE_MS after it ends: its resume, and whether a prompt
+// typed meanwhile carries it. Such a prompt raises prompt.submit only once the compaction ends.
 let pending: { resume?: string; isCarried: boolean } | undefined
+/** How long a prompt typed during the compaction has to reach prompt.submit before ours is sent. */
+const SETTLE_MS = 1500
 
 // The engine reloads CLAUDE.md after a compaction, so this asks for obedience, not a costly re-read.
 const AFTER = 'Your CLAUDE.md files were reloaded and are mandatory: first do everything they require after a compaction (such as repeating rules or reloading skills), then'
@@ -105,13 +107,18 @@ export const register: Register = on => {
       $.clock.after(0, () =>
         void $.session
           .compact({ instructions })
-          .then(async r => {
+          .then(r => {
             if (r.skip !== undefined) {
               pending = undefined
               return $.ui.toast(`context-meter: compaction skipped - ${r.skip}`)
             }
-            // Always submitted: our hooks never see it queue, so its turn.start ends it if a prompt ahead carried the resume.
-            await $.prompt.submit({ text: resumeText(resume) })
+            // ponytail: a fixed wait for the engine to hand over a typed prompt; one later than this runs without the note, ours after it.
+            $.clock.after(SETTLE_MS, () => {
+              const isCarried = pending?.isCarried
+              pending = undefined
+              if (!isCarried)
+                void $.prompt.submit({ text: resumeText(resume) }).catch(() => $.ui.toast('context-meter: could not send the resume prompt'))
+            })
           })
           .catch(err => {
             pending = undefined
@@ -122,23 +129,12 @@ export const register: Register = on => {
     return done
   })
 
-  on('turn.start', async ($, e, next) => {
-    const started = await next(e)
-    if (e.agentId === undefined && pending !== undefined && e.text.includes(resumeText(pending.resume))) {
-      const { isCarried } = pending
-      pending = undefined
-      // Stale: the prompt that ran ahead of it carried the resume. Ended before its first model call.
-      if (isCarried) await $.turn.abort({ turnId: e.turnId }).catch(() => undefined)
-    }
-    return started
-  })
-
   // A hidden note beside the prompt (not the system prompt, so the prompt cache holds).
   on('prompt.submit', async ($, e, next) => {
     if (e.command !== undefined) return next(e)
     if (pending !== undefined) {
-      // Typed (or delivered) around the compaction: it runs ahead of our resume prompt, so it carries the resume.
-      if (pending.isCarried || e.text === resumeText(pending.resume)) return next(e)
+      // Typed (or delivered) around the compaction: the first carries the resume, and ours is not sent.
+      if (pending.isCarried) return next(e)
       pending.isCarried = true
       return next({ ...e, context: [...(e.context ?? []), carriedText(pending.resume)] })
     }
