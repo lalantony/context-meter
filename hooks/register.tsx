@@ -12,12 +12,20 @@ const k = (n: number) => `${Math.round(n / 1000)}k`
 // A compaction the agent asked for, run when its turn ends: $.session.compact rejects mid-turn.
 // Module state, so a mod reload drops a queued one; the agent can ask again.
 let queued: { instructions?: string; resume?: string } | undefined
+// While a compaction runs: its resume, and whether a prompt queued meanwhile already carries it.
+let running: { resume?: string; isCarried: boolean } | undefined
+
+// The engine reloads CLAUDE.md after a compaction, so this asks for obedience, not a costly re-read.
+const AFTER = 'Your CLAUDE.md files were reloaded and are mandatory: first do everything they require after a compaction (such as repeating rules or reloading skills), then'
 
 /** The prompt that starts the first turn after a compaction: a between-turns compact leaves the session idle. */
-// The engine reloads CLAUDE.md after a compaction, so this asks for obedience, not a costly re-read.
 export const resumeText = (resume?: string) =>
-  '[context-meter] Compaction finished. Your CLAUDE.md files were reloaded and are mandatory: first do everything they ' +
-  `require after a compaction (such as repeating rules or reloading skills), then: ${resume ?? 'continue the task from the summary; if it was already done, tell the user in one line and stop.'}`
+  `[context-meter] Compaction finished. ${AFTER}: ${resume ?? 'continue the task from the summary; if it was already done, tell the user in one line and stop.'}`
+
+/** Rides on a prompt queued during the compaction, which runs before any prompt of ours would: it replaces ours. */
+export const carriedText = (resume?: string) =>
+  `[context-meter] The conversation was compacted while this message waited. ${AFTER} answer this message: it comes first. ` +
+  `Afterwards, unless it changed the plan: ${resume ?? 'continue the task from the summary.'}`
 
 /** The tool's answer: the status line's figures, plus /context's local estimate when asked. */
 export function describe(c: SessionContextUsage): string {
@@ -92,14 +100,20 @@ export const register: Register = on => {
       queued = undefined
       // An interrupted or failed turn hands control back to the person: no compaction.
       if (e.reason !== 'answer') return done
+      running = { resume, isCarried: false }
       $.clock.after(0, () =>
         void $.session
           .compact({ instructions })
           .then(async r => {
+            const isCarried = running?.isCarried === true
+            running = undefined
             if (r.skip !== undefined) return $.ui.toast(`context-meter: compaction skipped - ${r.skip}`)
-            await $.prompt.submit({ text: resumeText(resume) })
+            if (!isCarried) await $.prompt.submit({ text: resumeText(resume) })
           })
-          .catch(err => $.ui.toast(`context-meter: could not compact (${String(err).slice(0, 80)}); run /compact`)),
+          .catch(err => {
+            running = undefined
+            return $.ui.toast(`context-meter: could not compact (${String(err).slice(0, 80)}); run /compact`)
+          }),
       )
     }
     return done
@@ -108,6 +122,12 @@ export const register: Register = on => {
   // A hidden note beside the prompt (not the system prompt, so the prompt cache holds).
   on('prompt.submit', async ($, e, next) => {
     if (e.command !== undefined) return next(e)
+    // Typed (or delivered) mid-compaction: it queues ahead of our resume prompt, so it carries the resume instead.
+    if (running !== undefined) {
+      if (running.isCarried) return next(e)
+      running.isCarried = true
+      return next({ ...e, context: [...(e.context ?? []), carriedText(running.resume)] })
+    }
     const { context } = await $.session.usage()
     if ((context.percent ?? 0) < NUDGE_AT) return next(e)
     return next({ ...e, context: [...(e.context ?? []), nudge(context.percent ?? NUDGE_AT)] })

@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { describe, nudge, resumeText } from './register'
+import { carriedText, describe, nudge, resumeText } from './register'
 
 const row = (name: string, tokens: number, kind: 'used' | 'free' | 'buffer' | 'deferred' = 'used') =>
   ({ name, tokens, kind, color: 'x', isDeferred: kind === 'deferred' }) as never
@@ -64,12 +64,20 @@ test('below 90% nothing is added', async ($, on) => {
   expect(seen.at(-1)?.context ?? []).toEqual([])
 })
 
-async function compactAndEndTurn($: never, on: On, answer: object, reason = 'answer') {
+async function compactAndEndTurn($: never, on: On, answer: object, reason = 'answer', typed: string[] = []) {
   const clock = mock.clock(on, { now: 0 })
   const seen = world(on, 25)
   const asked: (string | undefined)[] = []
   on('session.compact', async (_, e) => {
     asked.push(e.instructions)
+    // The person types while the compaction runs.
+    for (const text of typed) {
+      await (($ as unknown as { prompt: { submit: (x: never) => Promise<unknown> } }).prompt.submit({
+        text,
+        origin: { kind: 'composer' },
+        wait: false,
+      } as never))
+    }
     return answer as never
   })
   on('turn.complete', async () => ({ text: 'done' }) as never)
@@ -89,6 +97,15 @@ test('when the turn ends the compaction runs, then a prompt starts the next turn
   expect(seen.map(x => x.text)).toEqual([resumeText('Start phase 3')])
   expect(resumeText('Start phase 3')).toContain('CLAUDE.md files were reloaded and are mandatory')
   expect(resumeText('Start phase 3')).toContain('then: Start phase 3')
+})
+
+test('a prompt typed during the compaction carries the resume, and no prompt of ours queues behind it', async ($, on) => {
+  const summary = { messages: [{ role: 'user', text: 'summary', toolUses: [] }] }
+  const { seen } = await compactAndEndTurn($ as never, on, summary, 'answer', ['actually, stop', 'and wait'])
+  expect(seen.map(x => x.text)).toEqual(['actually, stop', 'and wait'])
+  expect(seen[0].context).toEqual([carriedText('Start phase 3')])
+  expect(seen[1].context ?? []).toEqual([])
+  expect(carriedText('Start phase 3')).toContain('answer this message: it comes first')
 })
 
 test('a skipped compaction starts no turn', async ($, on) => {
