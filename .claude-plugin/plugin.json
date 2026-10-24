@@ -1,5 +1,5 @@
 {
   "name": "context-meter",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Gives the agent tools to read how full its context window is and to compact itself at a clean break; nudges from 90%."
 }
