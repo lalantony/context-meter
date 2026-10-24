@@ -135,3 +135,44 @@ test('an interrupted turn drops the queued compaction', async ($, on) => {
   expect(asked).toEqual([])
   expect(seen).toEqual([])
 })
+
+// A reload runs session.start again with the module's timers gone and $.state kept:
+// these hooks stand for the state the old module wrote.
+async function startAfterReload($: never, on: On, queued: object) {
+  let stored: unknown = queued
+  let version = 1
+  on('state.get', async () => ({ value: { value: stored, version } }) as never)
+  on('state.set', async (_, e) => {
+    const { value, ifVersion } = e as unknown as { value: unknown; ifVersion?: number }
+    if (ifVersion !== undefined && ifVersion !== version) return { value: { isSet: false, version } } as never
+    stored = value
+    version += 1
+    return { value: { isSet: true, version } } as never
+  })
+  const clock = mock.clock(on, { now: 0 })
+  const seen = world(on, 25)
+  const asked: (string | undefined)[] = []
+  on('session.compact', async (_, e) => {
+    asked.push(e.instructions)
+    return { messages: [{ role: 'user', text: 'summary', toolUses: [] }] } as never
+  })
+  on('ui.toast', async () => ({ value: undefined }) as never)
+  on('session.messages', async () => ({ value: [] }) as never)
+  await start($)
+  await clock.settle()
+  await clock.advance(1500)
+  return { seen, asked, stored: () => stored }
+}
+
+test('a reload after the turn ended still runs the queued compaction', async ($, on) => {
+  const { seen, asked, stored } = await startAfterReload($ as never, on, { instructions: 'keep the plan', resume: 'Start phase 3', isTurnDone: true })
+  expect(asked).toEqual(['keep the plan'])
+  expect(seen.map(x => x.text)).toEqual([resumeText('Start phase 3')])
+  expect(stored()).toBe(null)
+})
+
+test('a reload mid-turn leaves the compaction for the end of the turn', async ($, on) => {
+  const { seen, asked } = await startAfterReload($ as never, on, { instructions: 'keep the plan', isTurnDone: false })
+  expect(asked).toEqual([])
+  expect(seen).toEqual([])
+})

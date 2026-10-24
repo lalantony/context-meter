@@ -1,5 +1,6 @@
 {
   "name": "context-meter",
-  "version": "0.3.4",
-  "description": "Gives the agent tools to read how full its context window is and to compact itself at a clean break; nudges from 90%."
+  "version": "0.3.5",
+  "description": "Gives the agent tools to read how full its context window is and to compact itself at a clean break; nudges from 90%.",
+  "types": "./types/index.d.ts"
 }
